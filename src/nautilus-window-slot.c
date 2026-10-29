@@ -31,6 +31,7 @@
 #include "nautilus-enum-types.h"
 #include "nautilus-fd-holder.h"
 #include "nautilus-files-view.h"
+#include "nautilus-folder-view-prefs.h"
 #include "nautilus-location-banner.h"
 #include "nautilus-mime-actions.h"
 #include "nautilus-query.h"
@@ -289,6 +290,14 @@ nautilus_window_slot_get_view_id_for_location (NautilusWindowSlot *self,
         return NAUTILUS_VIEW_NETWORK_ID;
     }
 
+    guint saved_view_id;
+    int saved_zoom_level;
+
+    if (nautilus_folder_view_prefs_lookup (effective_location, &saved_view_id, &saved_zoom_level))
+    {
+        return saved_view_id;
+    }
+
     return self->default_view_id;
 }
 
@@ -345,6 +354,25 @@ nautilus_window_slot_sync_actions (NautilusWindowSlot *self)
     }
     action = g_action_map_lookup_action (G_ACTION_MAP (self->slot_action_group), "files-view-mode-toggle");
     g_simple_action_set_enabled (G_SIMPLE_ACTION (action), !is_network_view);
+
+    nautilus_window_slot_sync_folder_view_action (self);
+}
+
+void
+nautilus_window_slot_sync_folder_view_action (NautilusWindowSlot *self)
+{
+    gboolean has_own = FALSE;
+
+    if (self->content_view != NULL)
+    {
+        g_autoptr (GFile) location = nautilus_files_view_get_folder_view_location (self->content_view);
+
+        has_own = location != NULL && nautilus_folder_view_prefs_has_own (location);
+    }
+
+    GAction *action = g_action_map_lookup_action (G_ACTION_MAP (self->slot_action_group),
+                                                  "reset-folder-view");
+    g_simple_action_set_enabled (G_SIMPLE_ACTION (action), has_own);
 }
 
 static void
@@ -1093,13 +1121,36 @@ change_files_view_mode (NautilusWindowSlot *self,
     g_return_if_fail (view_id == NAUTILUS_VIEW_LIST_ID ||
                       view_id == NAUTILUS_VIEW_GRID_ID);
 
-    if (self->default_view_id != view_id)
+    nautilus_window_slot_set_view_id (self, view_id);
+    nautilus_files_view_save_folder_view (self->content_view);
+}
+
+static void
+action_reset_folder_view (GSimpleAction *action,
+                          GVariant      *value,
+                          gpointer       user_data)
+{
+    NautilusWindowSlot *self = NAUTILUS_WINDOW_SLOT (user_data);
+
+    if (!NAUTILUS_IS_FILES_VIEW (self->content_view))
     {
-        self->default_view_id = view_id;
-        g_settings_set_enum (nautilus_preferences, NAUTILUS_PREFERENCES_DEFAULT_FOLDER_VIEWER, view_id);
+        return;
     }
 
-    nautilus_window_slot_set_view_id (self, view_id);
+    g_autoptr (GFile) location = nautilus_files_view_get_folder_view_location (self->content_view);
+
+    if (location == NULL)
+    {
+        return;
+    }
+
+    nautilus_folder_view_prefs_reset (location);
+
+    GFile *view_location = nautilus_files_view_get_location (self->content_view);
+    nautilus_window_slot_set_view_id (self,
+                                      nautilus_window_slot_get_view_id_for_location (self, view_location));
+    nautilus_files_view_apply_folder_zoom (self->content_view);
+    nautilus_window_slot_sync_actions (self);
 }
 
 static void
@@ -1228,6 +1279,7 @@ const GActionEntry slot_entries[] =
         .change_state = action_files_view_mode
     },
     { .name = "files-view-mode-toggle", .activate = action_files_view_mode_toggle },
+    { .name = "reset-folder-view", .activate = action_reset_folder_view },
     { .name = "search-visible", .state = "false", .change_state = action_search_visible },
     { .name = "search-global", .state = "false", .change_state = action_search_global },
     { .name = "focus-search", .activate = action_focus_search },

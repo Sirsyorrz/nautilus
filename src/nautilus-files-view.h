@@ -43,6 +43,13 @@ nautilus_files_view_get_view_id (NautilusFilesView *self);
 void                nautilus_files_view_change                           (NautilusFilesView  *self,
                                                                           guint               id);
 
+void
+nautilus_files_view_apply_folder_zoom (NautilusFilesView *self);
+void
+nautilus_files_view_save_folder_view (NautilusFilesView *self);
+GFile *
+nautilus_files_view_get_folder_view_location (NautilusFilesView *self);
+
 const char *
 nautilus_files_view_get_toggle_icon_name (NautilusFilesView *self);
 const char *

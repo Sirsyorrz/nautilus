@@ -53,6 +53,7 @@
 #include "nautilus-file.h"
 #include "nautilus-filename-utilities.h"
 #include "nautilus-floating-bar.h"
+#include "nautilus-folder-view-prefs.h"
 #include "nautilus-global-preferences.h"
 #include "nautilus-grid-view.h"
 #include "nautilus-grid-view-captions-dialog.h"
@@ -634,6 +635,7 @@ files_view_begin_loading (NautilusFilesView *self)
     nautilus_files_view_update_toolbar_menus (self);
 
     nautilus_list_base_setup_directory (self->list_base, self->directory);
+    nautilus_files_view_apply_folder_zoom (self);
 
     GtkRoot *window = gtk_widget_get_root (GTK_WIDGET (self));
 
@@ -2638,6 +2640,7 @@ action_zoom_in (GSimpleAction *action,
 
     nautilus_list_base_set_zoom_level (self->list_base, zoom_level + 1);
     update_zoom_actions_state (self);
+    nautilus_files_view_save_folder_view (self);
 }
 
 static void
@@ -2650,6 +2653,7 @@ action_zoom_out (GSimpleAction *action,
 
     nautilus_list_base_set_zoom_level (self->list_base, zoom_level - 1);
     update_zoom_actions_state (self);
+    nautilus_files_view_save_folder_view (self);
 }
 
 static void
@@ -2662,6 +2666,96 @@ action_zoom_standard (GSimpleAction *action,
 
     nautilus_list_base_set_zoom_level (self->list_base, view_info.zoom_level_standard);
     update_zoom_actions_state (self);
+    nautilus_files_view_save_folder_view (self);
+}
+
+/* Search results use the settings of the folder being searched. Returns NULL
+ * for global search, which has no folder. */
+GFile *
+nautilus_files_view_get_folder_view_location (NautilusFilesView *self)
+{
+    if (self->search_query != NULL)
+    {
+        return nautilus_query_get_location (self->search_query);
+    }
+
+    return self->location != NULL ? g_object_ref (self->location) : NULL;
+}
+
+static gboolean
+is_folder_view_id (guint view_id)
+{
+    return view_id == NAUTILUS_VIEW_LIST_ID || view_id == NAUTILUS_VIEW_GRID_ID;
+}
+
+static int
+get_global_default_zoom_level (guint view_id)
+{
+    GSettings *settings = (view_id == NAUTILUS_VIEW_GRID_ID) ?
+                          nautilus_icon_view_preferences :
+                          nautilus_list_view_preferences;
+
+    return g_settings_get_enum (settings, "default-zoom-level");
+}
+
+void
+nautilus_files_view_apply_folder_zoom (NautilusFilesView *self)
+{
+    NautilusViewInfo view_info = nautilus_list_base_get_view_info (self->list_base);
+
+    if (!is_folder_view_id (view_info.view_id))
+    {
+        return;
+    }
+
+    g_autoptr (GFile) location = nautilus_files_view_get_folder_view_location (self);
+    int zoom_level = get_global_default_zoom_level (view_info.view_id);
+    guint saved_view_id;
+    int saved_zoom_level;
+
+    /* A saved zoom level only makes sense for the view type it was saved
+     * with, since grid and list have different zoom ranges. */
+    if (location != NULL &&
+        nautilus_folder_view_prefs_lookup (location, &saved_view_id, &saved_zoom_level) &&
+        saved_view_id == view_info.view_id)
+    {
+        zoom_level = saved_zoom_level;
+    }
+
+    zoom_level = CLAMP (zoom_level, view_info.zoom_level_min, view_info.zoom_level_max);
+    if (zoom_level != nautilus_list_base_get_zoom_level (self->list_base))
+    {
+        nautilus_list_base_set_zoom_level (self->list_base, zoom_level);
+    }
+
+    update_zoom_actions_state (self);
+}
+
+void
+nautilus_files_view_save_folder_view (NautilusFilesView *self)
+{
+    NautilusViewInfo view_info = nautilus_list_base_get_view_info (self->list_base);
+
+    if (!is_folder_view_id (view_info.view_id))
+    {
+        return;
+    }
+
+    g_autoptr (GFile) location = nautilus_files_view_get_folder_view_location (self);
+
+    if (location == NULL)
+    {
+        return;
+    }
+
+    nautilus_folder_view_prefs_save (location,
+                                     view_info.view_id,
+                                     nautilus_list_base_get_zoom_level (self->list_base));
+
+    if (self->slot != NULL)
+    {
+        nautilus_window_slot_sync_folder_view_action (self->slot);
+    }
 }
 
 static void
@@ -9766,6 +9860,7 @@ nautilus_files_view_change (NautilusFilesView *self,
 
     /* Prepare directory settings before connecting the model. */
     nautilus_list_base_setup_directory (self->list_base, self->directory);
+    nautilus_files_view_apply_folder_zoom (self);
 
     connect_inner_view (self);
 

@@ -123,6 +123,8 @@ libnautilus_sources = [
   'nautilus-filename-utilities.h',
   'nautilus-filename-validator.c',
   'nautilus-filename-validator.h',
+  'nautilus-folder-view-prefs.c',
+  'nautilus-folder-view-prefs.h',
   'nautilus-files-view-dnd.c',
   'nautilus-files-view-dnd.h',
   'nautilus-files-view.c',

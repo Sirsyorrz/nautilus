@@ -101,6 +101,8 @@ NautilusQueryEditor *nautilus_window_slot_get_query_editor (NautilusWindowSlot *
 
 NautilusFilesView*  nautilus_window_slot_get_current_view  (NautilusWindowSlot *slot);
 
+void nautilus_window_slot_sync_folder_view_action (NautilusWindowSlot *self);
+
 void
 nautilus_window_slot_navigate (NautilusWindowSlot *self,
                                int                 distance);

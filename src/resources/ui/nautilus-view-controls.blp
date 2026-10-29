@@ -25,6 +25,14 @@ menu view_menu {
 
   section {
     item {
+      label: _("_Use Parent Folder View");
+      action: "slot.reset-folder-view";
+      hidden-when: "action-disabled";
+    }
+  }
+
+  section {
+    item {
       label: _("Show _Hidden Files");
       action: "view.show-hidden-files";
       accel: "<control>h";

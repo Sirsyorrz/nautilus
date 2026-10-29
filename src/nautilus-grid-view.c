@@ -197,14 +197,6 @@ real_set_zoom_level (NautilusListBase *list_base,
 
     self->zoom_level = new_level;
 
-    if (g_settings_get_enum (nautilus_icon_view_preferences,
-                             NAUTILUS_PREFERENCES_ICON_VIEW_DEFAULT_ZOOM_LEVEL) != new_level)
-    {
-        g_settings_set_enum (nautilus_icon_view_preferences,
-                             NAUTILUS_PREFERENCES_ICON_VIEW_DEFAULT_ZOOM_LEVEL,
-                             new_level);
-    }
-
     /* The zoom level may change how many captions are allowed. Update it before
      * notifying the icon size change, under the assumption that NautilusGridCell
      * updates captions whenever the icon size is set*/

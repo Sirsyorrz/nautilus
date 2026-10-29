@@ -518,14 +518,6 @@ real_set_zoom_level (NautilusListBase *list_base,
 
     self->zoom_level = new_level;
 
-    if (g_settings_get_enum (nautilus_list_view_preferences,
-                             NAUTILUS_PREFERENCES_LIST_VIEW_DEFAULT_ZOOM_LEVEL) != new_level)
-    {
-        g_settings_set_enum (nautilus_list_view_preferences,
-                             NAUTILUS_PREFERENCES_LIST_VIEW_DEFAULT_ZOOM_LEVEL,
-                             new_level);
-    }
-
     g_object_notify (G_OBJECT (self), "icon-size");
 
     if (self->zoom_level == NAUTILUS_LIST_ZOOM_LEVEL_SMALL)
