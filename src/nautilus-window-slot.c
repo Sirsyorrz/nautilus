@@ -610,6 +610,14 @@ nautilus_window_slot_handle_event (NautilusWindowSlot    *self,
 
         if (!g_variant_get_boolean (action_state))
         {
+            if (keyval == GDK_KEY_BackSpace &&
+                (state & gtk_accelerator_get_default_mod_mask ()) == 0 &&
+                g_action_group_get_action_enabled (self->slot_action_group, "back"))
+            {
+                g_action_group_activate_action (self->slot_action_group, "back", NULL);
+                return GDK_EVENT_STOP;
+            }
+
             return GDK_EVENT_PROPAGATE;
         }
         else if (keyval == GDK_KEY_Escape)
