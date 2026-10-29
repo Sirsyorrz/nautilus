@@ -90,6 +90,25 @@ save_window_size (GtkWindow *window)
                     "(ii)", width, height);
 }
 
+typedef struct
+{
+    GtkWindow *window;
+    GxdpExternalWindow *external_parent;
+} DeferredTeardown;
+
+static void
+deferred_teardown (gpointer user_data)
+{
+    DeferredTeardown *teardown = user_data;
+
+    gtk_window_destroy (teardown->window);
+    g_object_unref (teardown->window);
+    g_clear_object (&teardown->external_parent);
+    g_free (teardown);
+
+    g_application_release (g_application_get_default ());
+}
+
 static void
 complete_file_chooser (FileChooserData *data,
                        int              response,
@@ -126,9 +145,17 @@ complete_file_chooser (FileChooserData *data,
     nautilus_portal_request_unexport (data->request);
 
     save_window_size (data->window);
-    gtk_window_destroy (data->window);
 
-    g_application_release (g_application_get_default ());
+    /* Destroying the surface also drops the xdg-foreign parent link, and KWin
+     * clears it before reporting the dialog closed, so its dialogparent effect
+     * can no longer find the parent to undim it. Unmap first and tear down on
+     * the next idle, after the compositor has seen the close. */
+    gtk_widget_set_visible (GTK_WIDGET (data->window), FALSE);
+
+    DeferredTeardown *teardown = g_new0 (DeferredTeardown, 1);
+    teardown->window = g_object_ref (data->window);
+    teardown->external_parent = g_steal_pointer (&data->external_parent);
+    g_idle_add_once (deferred_teardown, teardown);
 }
 
 static void
