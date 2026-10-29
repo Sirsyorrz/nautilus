@@ -1,0 +1,6 @@
+src/
+pkg/
+nautilus/
+libgxdp/
+*.pkg.tar.*
+*.log

@@ -1,0 +1,83 @@
+# Maintainer: Sirsyorrz <Sirsyorrz@gmail.com>
+# Based on the Arch nautilus PKGBUILD. Uses the stock libnautilus-extension.
+# Lives on the sirs/<major> branch of github.com/Sirsyorrz/nautilus and builds that branch.
+# Build with: cd build-aux/arch; makepkg -si
+
+pkgname=nautilus-sirs
+_pkgname=nautilus
+pkgver=51.1
+pkgrel=1
+pkgdesc="GNOME Files with per-folder views and sidebar separators"
+url="https://github.com/Sirsyorrz/nautilus"
+arch=(x86_64)
+license=(GPL-3.0-or-later)
+depends=(
+  cairo
+  dconf
+  gdk-pixbuf2
+  gexiv2
+  glib2
+  glibc
+  glycin
+  glycin-gtk4
+  gnome-autoar
+  gnome-desktop-4
+  graphene
+  gst-plugins-base-libs
+  gstreamer
+  gtk4
+  gvfs
+  hicolor-icon-theme
+  icu
+  libadwaita
+  libcloudproviders
+  libgcc
+  libnautilus-extension
+  libportal
+  libportal-gtk4
+  libx11
+  localsearch
+  pango
+  tinysparql
+  wayland
+  xdg-user-dirs-gtk
+)
+makedepends=(
+  appstream
+  blueprint-compiler
+  git
+  glib2-devel
+  meson
+)
+provides=("nautilus=$pkgver")
+conflicts=(nautilus)
+_branch="sirs/${pkgver%%.*}"
+source=(
+  "$_pkgname::git+https://github.com/Sirsyorrz/nautilus.git#branch=$_branch"
+  "git+https://gitlab.gnome.org/GNOME/libgxdp.git#commit=df896e3412b749947bc6f62a91a1aac8e6b6d19b"
+)
+b2sums=('SKIP'
+        'SKIP')
+
+build() {
+  local meson_options=(
+    -D docs=false
+    -D introspection=false
+    -D selinux=false
+    -D tests=none
+  )
+
+  export MESON_PACKAGE_CACHE_DIR="$srcdir"
+
+  arch-meson $_pkgname build "${meson_options[@]}"
+  meson compile -C build
+}
+
+package() {
+  meson install -C build --no-rebuild --destdir "$pkgdir"
+
+  # Provided by the stock libnautilus-extension package
+  cd "$pkgdir"
+  rm -rf usr/include usr/lib/girepository-1.0 usr/lib/libnautilus-extension* \
+    usr/lib/pkgconfig usr/share/gir-1.0
+}
