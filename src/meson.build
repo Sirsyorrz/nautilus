@@ -131,6 +131,8 @@ libnautilus_sources = [
   'nautilus-files-view.h',
   'nautilus-floating-bar.c',
   'nautilus-floating-bar.h',
+  'nautilus-folder-preview.c',
+  'nautilus-folder-preview.h',
   'nautilus-freedesktop-dbus.c',
   'nautilus-freedesktop-dbus.h',
   'nautilus-global-preferences.c',

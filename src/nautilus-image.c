@@ -11,6 +11,7 @@
 #include "nautilus-image.h"
 
 #include "nautilus-file.h"
+#include "nautilus-folder-preview.h"
 #include "nautilus-global-preferences.h"
 #include "nautilus-hash-queue.h"
 #include "nautilus-mime-actions.h"
@@ -32,6 +33,9 @@ struct _NautilusImage
     gchar *source_content_type;
     GdkPaintable *fallback_paintable;
 
+    gboolean is_folder;
+    GPtrArray *folder_tiles;
+
     gboolean is_loading_attributes;
     GCancellable *cancellable;
     GError *error;
@@ -51,6 +55,7 @@ static GParamSpec *properties[N_PROPS];
 G_DEFINE_FINAL_TYPE (NautilusImage, nautilus_image, GTK_TYPE_WIDGET);
 
 #define CACHE_COUNT_LIMIT 1000
+#define MIN_FOLDER_PREVIEW_SIZE NAUTILUS_GRID_ICON_SIZE_SMALL
 
 static void
 nautilus_image_set_texture (NautilusImage *self,
@@ -367,6 +372,34 @@ thumbnail_file_read_callback (GObject      *source_object,
 }
 
 static void
+folder_preview_ready_callback (GObject      *source_object,
+                               GAsyncResult *res,
+                               gpointer      user_data)
+{
+    g_autoptr (GError) error = NULL;
+    g_autoptr (GPtrArray) tiles = nautilus_folder_preview_load_finish (res, &error);
+
+    if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+    {
+        return;
+    }
+
+    NautilusImage *self = user_data;
+
+    if (tiles == NULL)
+    {
+        g_debug ("Folder preview failed: %s", error->message);
+        return;
+    }
+
+    if (tiles->len > 0)
+    {
+        self->folder_tiles = g_steal_pointer (&tiles);
+        gtk_widget_queue_draw (GTK_WIDGET (self));
+    }
+}
+
+static void
 file_info_ready_callback (GObject      *source_object,
                           GAsyncResult *res,
                           gpointer      user_data)
@@ -409,6 +442,23 @@ file_info_ready_callback (GObject      *source_object,
     else
     {
         self->source_content_type = g_strdup ("application/octet-stream");
+    }
+
+    if (g_content_type_equals (self->source_content_type, "inode/directory"))
+    {
+        self->is_folder = TRUE;
+
+        if (self->size >= MIN_FOLDER_PREVIEW_SIZE &&
+            g_file_is_native (self->source))
+        {
+            nautilus_folder_preview_load_async (self->source,
+                                                self->source_mtime,
+                                                self->cancellable,
+                                                folder_preview_ready_callback,
+                                                self);
+        }
+
+        return;
     }
 
     /* Look in nautilus's thumbnail cache */
@@ -497,6 +547,13 @@ file_info_ready_callback (GObject      *source_object,
 NautilusImageStatus
 nautilus_image_get_status (NautilusImage *self)
 {
+    if (self->is_folder)
+    {
+        return self->folder_tiles != NULL
+               ? NAUTILUS_IMAGE_STATUS_FOLDER_PREVIEW
+               : NAUTILUS_IMAGE_STATUS_FALLBACK;
+    }
+
     if (self->texture != NULL)
     {
         return NAUTILUS_IMAGE_STATUS_THUMBNAIL;
@@ -643,6 +700,8 @@ nautilus_image_set_source (NautilusImage *self,
     g_clear_pointer (&self->source_content_type, g_free);
     self->source_mtime = 0;
     g_clear_error (&self->error);
+    self->is_folder = FALSE;
+    g_clear_pointer (&self->folder_tiles, g_ptr_array_unref);
 
     self->is_loading_attributes = FALSE;
     g_cancellable_cancel (self->cancellable);
@@ -687,7 +746,20 @@ nautilus_image_set_size (NautilusImage *self,
 {
     if (self->size != size)
     {
+        gboolean needs_folder_preview = self->is_folder &&
+                                        self->folder_tiles == NULL &&
+                                        self->size < MIN_FOLDER_PREVIEW_SIZE &&
+                                        size >= MIN_FOLDER_PREVIEW_SIZE;
+
         self->size = size;
+
+        if (needs_folder_preview)
+        {
+            g_autoptr (GFile) source = g_object_ref (self->source);
+
+            nautilus_image_set_source (self, NULL);
+            nautilus_image_set_source (self, source);
+        }
 
         gtk_widget_queue_resize (GTK_WIDGET (self));
 
@@ -833,6 +905,14 @@ real_snapshot (GtkWidget   *widget,
         }
 
         gdk_paintable_snapshot (paintable, GDK_SNAPSHOT (snapshot), width, height);
+
+        if (status == NAUTILUS_IMAGE_STATUS_FOLDER_PREVIEW &&
+            self->fallback_paintable != NULL &&
+            self->size >= MIN_FOLDER_PREVIEW_SIZE)
+        {
+            nautilus_folder_preview_snapshot (snapshot, self->folder_tiles, width, height,
+                                              gtk_widget_get_scale_factor (widget));
+        }
     }
 
     GTK_WIDGET_CLASS (nautilus_image_parent_class)->snapshot (widget, snapshot);
@@ -868,7 +948,8 @@ real_measure (GtkWidget      *widget,
     }
     else if (self->fallback_paintable != NULL &&
              (status == NAUTILUS_IMAGE_STATUS_LOADING_ATTRIBUTES ||
-              status == NAUTILUS_IMAGE_STATUS_FALLBACK))
+              status == NAUTILUS_IMAGE_STATUS_FALLBACK ||
+              status == NAUTILUS_IMAGE_STATUS_FOLDER_PREVIEW))
     {
         GdkPaintable *paintable = self->fallback_paintable;
 
@@ -892,6 +973,7 @@ nautilus_image_dispose (GObject *object)
     g_clear_object (&self->texture);
     g_clear_pointer (&self->source_content_type, g_free);
     g_clear_object (&self->fallback_paintable);
+    g_clear_pointer (&self->folder_tiles, g_ptr_array_unref);
     g_cancellable_cancel (self->cancellable);
     g_clear_object (&self->cancellable);
     g_clear_error (&self->error);
