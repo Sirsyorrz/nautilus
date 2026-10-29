@@ -34,6 +34,18 @@
   background: none;
 }
 
+/* Sidebar bookmark separators. They are draggable rows, so keep them thin
+ * and without the hover highlight of regular rows. */
+.navigation-sidebar > row.sidebar-separator-row {
+  min-height: 0;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+.navigation-sidebar > row.sidebar-separator-row:hover,
+.navigation-sidebar > row.sidebar-separator-row:active {
+  background: none;
+}
+
 /* Path bar */
 
 .nautilus-pathbar {

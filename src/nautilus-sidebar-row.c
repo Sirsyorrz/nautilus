@@ -287,6 +287,23 @@ nautilus_sidebar_row_get_property (GObject    *object,
 }
 
 static void
+setup_as_separator (NautilusSidebarRow *self)
+{
+    GtkWidget *box = gtk_widget_get_parent (self->label_widget);
+    GtkWidget *separator = gtk_separator_new (GTK_ORIENTATION_HORIZONTAL);
+
+    gtk_widget_set_visible (self->start_icon_widget, FALSE);
+    gtk_widget_set_visible (self->label_widget, FALSE);
+    gtk_widget_set_hexpand (separator, TRUE);
+    gtk_widget_set_valign (separator, GTK_ALIGN_CENTER);
+    gtk_box_prepend (GTK_BOX (box), separator);
+
+    gtk_list_box_row_set_activatable (GTK_LIST_BOX_ROW (self), FALSE);
+    gtk_list_box_row_set_selectable (GTK_LIST_BOX_ROW (self), FALSE);
+    gtk_widget_add_css_class (GTK_WIDGET (self), "sidebar-separator-row");
+}
+
+static void
 nautilus_sidebar_row_set_property (GObject      *object,
                                    guint         prop_id,
                                    const GValue *value,
@@ -394,6 +411,10 @@ nautilus_sidebar_row_set_property (GObject      *object,
         case PROP_PLACE_TYPE:
         {
             self->place_type = g_value_get_enum (value);
+            if (self->place_type == NAUTILUS_SIDEBAR_ROW_BOOKMARK_SEPARATOR)
+            {
+                setup_as_separator (self);
+            }
             break;
         }
 

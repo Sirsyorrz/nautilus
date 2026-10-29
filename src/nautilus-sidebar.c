@@ -110,6 +110,10 @@ struct _NautilusSidebar
 
     NautilusBookmarkList *bookmark_list;
 
+    /* URIs of bookmarks that have a separator drawn below them */
+    GHashTable *separator_uris;
+    GFileMonitor *separators_monitor;
+
     GActionGroup *row_actions;
 
 #ifdef HAVE_CLOUDPROVIDERS
@@ -324,6 +328,191 @@ emit_drag_perform_drop (NautilusSidebar *sidebar,
     g_signal_emit (sidebar, places_sidebar_signals[DRAG_PERFORM_DROP], 0,
                    dest_file, source_file_list, action);
 }
+static void update_places (NautilusSidebar *sidebar);
+
+static char *
+get_separators_path (void)
+{
+    return g_build_filename (g_get_user_config_dir (), "nautilus", "sidebar-separators", NULL);
+}
+
+static void
+load_separators (NautilusSidebar *sidebar)
+{
+    g_autofree char *path = get_separators_path ();
+    g_autofree char *contents = NULL;
+
+    g_hash_table_remove_all (sidebar->separator_uris);
+
+    if (!g_file_get_contents (path, &contents, NULL, NULL))
+    {
+        return;
+    }
+
+    g_auto (GStrv) lines = g_strsplit (contents, "\n", -1);
+    for (guint i = 0; lines[i] != NULL; i++)
+    {
+        g_strstrip (lines[i]);
+        if (lines[i][0] != '\0')
+        {
+            g_hash_table_add (sidebar->separator_uris, g_strdup (lines[i]));
+        }
+    }
+}
+
+static void
+save_separators (NautilusSidebar *sidebar)
+{
+    g_autofree char *path = get_separators_path ();
+    g_autofree char *dir = g_path_get_dirname (path);
+    g_autoptr (GString) contents = g_string_new (NULL);
+    g_autoptr (GError) error = NULL;
+    g_autofree const char **uris = (const char **) g_hash_table_get_keys_as_array (sidebar->separator_uris, NULL);
+
+    for (guint i = 0; uris[i] != NULL; i++)
+    {
+        g_string_append_printf (contents, "%s\n", uris[i]);
+    }
+
+    g_mkdir_with_parents (dir, 0700);
+    if (!g_file_set_contents (path, contents->str, contents->len, &error))
+    {
+        g_warning ("Failed to save sidebar separators: %s", error->message);
+    }
+}
+
+/* Other windows (and hand edits) change the file under us. */
+static void
+on_separators_file_changed (GFileMonitor      *monitor,
+                            GFile             *file,
+                            GFile             *other_file,
+                            GFileMonitorEvent  event_type,
+                            NautilusSidebar   *sidebar)
+{
+    if (event_type == G_FILE_MONITOR_EVENT_ATTRIBUTE_CHANGED)
+    {
+        return;
+    }
+
+    load_separators (sidebar);
+    update_places (sidebar);
+}
+
+/* Bookmark URIs in sidebar order, with NULL entries for separators.
+ * Separators are stored as "below bookmark X", so this is the only place
+ * where their position is reconstructed. */
+static GPtrArray *
+build_bookmark_layout (NautilusSidebar *sidebar)
+{
+    GPtrArray *layout = g_ptr_array_new_with_free_func (g_free);
+    GList *bookmarks = nautilus_bookmark_list_get_all (sidebar->bookmark_list);
+
+    for (GList *l = bookmarks; l != NULL; l = l->next)
+    {
+        char *uri = nautilus_bookmark_get_uri (l->data);
+
+        g_ptr_array_add (layout, uri);
+        if (g_hash_table_contains (sidebar->separator_uris, uri))
+        {
+            g_ptr_array_add (layout, NULL);
+        }
+    }
+
+    return layout;
+}
+
+/* Re-anchors every separator to the bookmark right above it. Separators with
+ * no bookmark above them, or directly below another one, are dropped. */
+static void
+save_bookmark_layout (NautilusSidebar *sidebar,
+                      GPtrArray       *layout)
+{
+    const char *previous = NULL;
+
+    g_hash_table_remove_all (sidebar->separator_uris);
+
+    for (guint i = 0; i < layout->len; i++)
+    {
+        const char *entry = g_ptr_array_index (layout, i);
+
+        if (entry != NULL)
+        {
+            previous = entry;
+        }
+        else if (previous != NULL)
+        {
+            g_hash_table_add (sidebar->separator_uris, g_strdup (previous));
+        }
+    }
+
+    save_separators (sidebar);
+}
+
+static gboolean
+is_separator_row (NautilusSidebarRow *row)
+{
+    NautilusSidebarRowType place_type;
+
+    g_object_get (row, "place-type", &place_type, NULL);
+
+    return place_type == NAUTILUS_SIDEBAR_ROW_BOOKMARK_SEPARATOR;
+}
+
+static gboolean
+has_separator_below (NautilusSidebar    *sidebar,
+                     NautilusSidebarRow *row)
+{
+    NautilusSidebarRowType place_type;
+    g_autofree char *uri = NULL;
+
+    g_object_get (row, "place-type", &place_type, "uri", &uri, NULL);
+
+    return place_type == NAUTILUS_SIDEBAR_ROW_BOOKMARK &&
+           uri != NULL &&
+           g_hash_table_contains (sidebar->separator_uris, uri);
+}
+
+static gboolean
+is_last_bookmark (NautilusSidebar    *sidebar,
+                  NautilusSidebarRow *row)
+{
+    g_autofree char *uri = NULL;
+    GList *last = g_list_last (nautilus_bookmark_list_get_all (sidebar->bookmark_list));
+
+    g_object_get (row, "uri", &uri, NULL);
+    if (last == NULL || uri == NULL)
+    {
+        return FALSE;
+    }
+
+    g_autofree char *last_uri = nautilus_bookmark_get_uri (last->data);
+
+    return g_strcmp0 (uri, last_uri) == 0;
+}
+
+static void
+set_separator_below (NautilusSidebar *sidebar,
+                     const char      *anchor_uri,
+                     gboolean         enabled)
+{
+    if (anchor_uri == NULL)
+    {
+        return;
+    }
+
+    if (enabled)
+    {
+        g_hash_table_add (sidebar->separator_uris, g_strdup (anchor_uri));
+    }
+    else if (!g_hash_table_remove (sidebar->separator_uris, anchor_uri))
+    {
+        return;
+    }
+
+    save_separators (sidebar);
+    update_places (sidebar);
+}
+
 static void
 list_box_header_func (GtkListBoxRow *row,
                       GtkListBoxRow *before,
@@ -1036,6 +1225,17 @@ update_places (NautilusSidebar *sidebar)
         index++;
 
         g_free (tooltip);
+
+        /* A trailing separator would double up with the next section's line. */
+        if (l->next != NULL && g_hash_table_contains (sidebar->separator_uris, mount_uri))
+        {
+            row = add_place (sidebar, NAUTILUS_SIDEBAR_ROW_BOOKMARK_SEPARATOR,
+                             NAUTILUS_SIDEBAR_SECTION_BOOKMARKS,
+                             "", NULL, NULL, NULL, NULL, NULL, NULL, NULL, index, NULL);
+            g_object_set_data_full (G_OBJECT (row), "separator-anchor",
+                                    g_strdup (mount_uri), g_free);
+            index++;
+        }
     }
 
     /* Add new bookmark row */
@@ -1476,18 +1676,100 @@ out:
 }
 
 /* Reorders the bookmark to the specified position */
+/* Moves a bookmark or separator row so that it lands before the row that
+ * currently has order-index @new_position + 1. Separators keep their place
+ * relative to the other rows instead of following the bookmark they were
+ * anchored to. */
 static void
 reorder_bookmarks (NautilusSidebar    *sidebar,
                    NautilusSidebarRow *row,
                    int                 new_position)
 {
-    g_autoptr (NautilusFile) file = NULL;
+    g_autoptr (GPtrArray) layout = build_bookmark_layout (sidebar);
+    g_autofree char *uri = NULL;
+    int order_index;
+    guint source = G_MAXUINT;
 
-    g_object_get (row, "file", &file, NULL);
+    g_object_get (row, "uri", &uri, "order-index", &order_index, NULL);
 
-    g_autoptr (GFile) location = nautilus_file_get_location (file);
+    if (is_separator_row (row))
+    {
+        if (order_index >= 1 && (guint) order_index <= layout->len &&
+            g_ptr_array_index (layout, order_index - 1) == NULL)
+        {
+            source = order_index - 1;
+        }
+    }
+    else if (uri != NULL)
+    {
+        for (guint i = 0; i < layout->len; i++)
+        {
+            if (g_strcmp0 (g_ptr_array_index (layout, i), uri) == 0)
+            {
+                source = i;
+                break;
+            }
+        }
+    }
 
-    nautilus_bookmark_list_move_item (sidebar->bookmark_list, location, new_position);
+    if (source == G_MAXUINT)
+    {
+        return;
+    }
+
+    guint target = CLAMP (new_position, 0, (int) layout->len);
+    if (source < target)
+    {
+        target--;
+    }
+
+    if (source == target)
+    {
+        return;
+    }
+
+    char *item = g_ptr_array_steal_index (layout, source);
+    g_ptr_array_insert (layout, target, item);
+
+    save_bookmark_layout (sidebar, layout);
+
+    if (item == NULL)
+    {
+        update_places (sidebar);
+        return;
+    }
+
+    guint old_bookmark_index = 0;
+    guint new_bookmark_index = 0;
+    GList *bookmarks = nautilus_bookmark_list_get_all (sidebar->bookmark_list);
+
+    for (GList *l = bookmarks; l != NULL; l = l->next, old_bookmark_index++)
+    {
+        g_autofree char *bookmark_uri = nautilus_bookmark_get_uri (l->data);
+
+        if (g_strcmp0 (bookmark_uri, item) == 0)
+        {
+            break;
+        }
+    }
+
+    for (guint i = 0; i < layout->len && g_ptr_array_index (layout, i) != item; i++)
+    {
+        if (g_ptr_array_index (layout, i) != NULL)
+        {
+            new_bookmark_index++;
+        }
+    }
+
+    /* move_item() inserts before the bookmark currently at the destination,
+     * looked up before the moved one is taken out of the list. */
+    if (old_bookmark_index < new_bookmark_index)
+    {
+        new_bookmark_index++;
+    }
+
+    g_autoptr (GFile) location = g_file_new_for_uri (item);
+    nautilus_bookmark_list_move_item (sidebar->bookmark_list, location, new_bookmark_index);
 }
 
 /* Creates bookmarks for the specified files at the given position in the bookmarks list */
@@ -2219,6 +2501,19 @@ remove_bookmark (NautilusSidebarRow *row)
     if (type == NAUTILUS_SIDEBAR_ROW_BOOKMARK)
     {
         g_autoptr (GFile) location = nautilus_file_get_location (file);
+        g_autofree char *uri = g_file_get_uri (location);
+        g_autoptr (GPtrArray) layout = build_bookmark_layout (sidebar);
+
+        for (guint i = 0; i < layout->len; i++)
+        {
+            if (g_strcmp0 (g_ptr_array_index (layout, i), uri) == 0)
+            {
+                g_ptr_array_remove_index (layout, i);
+                break;
+            }
+        }
+        save_bookmark_layout (sidebar, layout);
+
         nautilus_bookmark_list_remove (sidebar->bookmark_list, location);
     }
 
@@ -2233,6 +2528,38 @@ remove_shortcut_cb (GSimpleAction *action,
     NautilusSidebar *sidebar = data;
 
     remove_bookmark (sidebar->context_row);
+}
+
+static void
+add_separator_cb (GSimpleAction *action,
+                  GVariant      *parameter,
+                  gpointer       data)
+{
+    NautilusSidebar *sidebar = data;
+    g_autofree char *uri = NULL;
+
+    g_object_get (sidebar->context_row, "uri", &uri, NULL);
+    set_separator_below (sidebar, uri, TRUE);
+}
+
+static void
+remove_separator_cb (GSimpleAction *action,
+                     GVariant      *parameter,
+                     gpointer       data)
+{
+    NautilusSidebar *sidebar = data;
+    g_autofree char *uri = NULL;
+
+    if (is_separator_row (sidebar->context_row))
+    {
+        uri = g_strdup (g_object_get_data (G_OBJECT (sidebar->context_row), "separator-anchor"));
+    }
+    else
+    {
+        g_object_get (sidebar->context_row, "uri", &uri, NULL);
+    }
+
+    set_separator_below (sidebar, uri, FALSE);
 }
 
 static void
@@ -2737,6 +3064,8 @@ static GActionEntry entries[] =
     { .name = "open-other", .activate = open_shortcut_cb, .parameter_type = "i"},
     { .name = "remove", .activate = remove_shortcut_cb},
     { .name = "rename", .activate = rename_shortcut_cb},
+    { .name = "add-separator", .activate = add_separator_cb},
+    { .name = "remove-separator", .activate = remove_separator_cb},
     { .name = "mount", .activate = mount_shortcut_cb},
     { .name = "unmount", .activate = unmount_shortcut_cb},
     { .name = "eject", .activate = eject_shortcut_cb},
@@ -2855,6 +3184,21 @@ build_popup_menu_using_gmenu (NautilusSidebarRow *row)
 }
 #endif
 
+/* Takes ownership of @menu */
+static void
+present_row_menu (NautilusSidebar *sidebar,
+                  GMenu           *menu)
+{
+    sidebar->popover = gtk_popover_menu_new_from_model (G_MENU_MODEL (menu));
+    g_object_unref (menu);
+    gtk_widget_set_parent (sidebar->popover, GTK_WIDGET (sidebar));
+    gtk_widget_set_halign (sidebar->popover, GTK_ALIGN_START);
+    gtk_popover_set_has_arrow (GTK_POPOVER (sidebar->popover), FALSE);
+    g_signal_connect (sidebar->popover, "destroy", G_CALLBACK (on_row_popover_destroy), sidebar);
+
+    setup_popover_shadowing (sidebar->popover, sidebar);
+}
+
 /* Constructs the popover for the sidebar row if needed */
 static void
 create_row_popover (NautilusSidebar    *sidebar,
@@ -2905,10 +3249,28 @@ create_row_popover (NautilusSidebar    *sidebar,
     }
 #endif
 
+    if (type == NAUTILUS_SIDEBAR_ROW_BOOKMARK_SEPARATOR)
+    {
+        action = g_action_map_lookup_action (G_ACTION_MAP (sidebar->row_actions), "remove-separator");
+        g_simple_action_set_enabled (G_SIMPLE_ACTION (action), TRUE);
+
+        menu = g_menu_new ();
+        g_menu_append (menu, _("_Remove Separator"), "row.remove-separator");
+        present_row_menu (sidebar, menu);
+        return;
+    }
+
     action = g_action_map_lookup_action (G_ACTION_MAP (sidebar->row_actions), "remove");
     g_simple_action_set_enabled (G_SIMPLE_ACTION (action), (type == NAUTILUS_SIDEBAR_ROW_BOOKMARK));
     action = g_action_map_lookup_action (G_ACTION_MAP (sidebar->row_actions), "rename");
     g_simple_action_set_enabled (G_SIMPLE_ACTION (action), (type == NAUTILUS_SIDEBAR_ROW_BOOKMARK));
+    gboolean separator_below = has_separator_below (sidebar, row);
+    action = g_action_map_lookup_action (G_ACTION_MAP (sidebar->row_actions), "add-separator");
+    g_simple_action_set_enabled (G_SIMPLE_ACTION (action),
+                                 type == NAUTILUS_SIDEBAR_ROW_BOOKMARK && !separator_below &&
+                                 !is_last_bookmark (sidebar, row));
+    action = g_action_map_lookup_action (G_ACTION_MAP (sidebar->row_actions), "remove-separator");
+    g_simple_action_set_enabled (G_SIMPLE_ACTION (action), separator_below);
     action = g_action_map_lookup_action (G_ACTION_MAP (sidebar->row_actions), "open");
     g_simple_action_set_enabled (G_SIMPLE_ACTION (action), !gtk_list_box_row_is_selected (GTK_LIST_BOX_ROW (row)));
     action = g_action_map_lookup_action (G_ACTION_MAP (sidebar->row_actions), "empty-trash");
@@ -2952,6 +3314,16 @@ create_row_popover (NautilusSidebar    *sidebar,
     g_object_unref (item);
 
     item = g_menu_item_new (_("_Rename"), "row.rename");
+    g_menu_item_set_attribute (item, "hidden-when", "s", "action-disabled");
+    g_menu_append_item (section, item);
+    g_object_unref (item);
+
+    item = g_menu_item_new (_("Add _Separator Below"), "row.add-separator");
+    g_menu_item_set_attribute (item, "hidden-when", "s", "action-disabled");
+    g_menu_append_item (section, item);
+    g_object_unref (item);
+
+    item = g_menu_item_new (_("Remove _Separator Below"), "row.remove-separator");
     g_menu_item_set_attribute (item, "hidden-when", "s", "action-disabled");
     g_menu_append_item (section, item);
     g_object_unref (item);
@@ -3094,14 +3466,7 @@ create_row_popover (NautilusSidebar    *sidebar,
         g_object_unref (section);
     }
 
-    sidebar->popover = gtk_popover_menu_new_from_model (G_MENU_MODEL (menu));
-    g_object_unref (menu);
-    gtk_widget_set_parent (sidebar->popover, GTK_WIDGET (sidebar));
-    gtk_widget_set_halign (sidebar->popover, GTK_ALIGN_START);
-    gtk_popover_set_has_arrow (GTK_POPOVER (sidebar->popover), FALSE);
-    g_signal_connect (sidebar->popover, "destroy", G_CALLBACK (on_row_popover_destroy), sidebar);
-
-    setup_popover_shadowing (sidebar->popover, sidebar);
+    present_row_menu (sidebar, menu);
 }
 
 static void
@@ -3380,6 +3745,14 @@ list_box_sort_func (GtkListBoxRow *row1,
     {
         place_type_2 = NAUTILUS_SIDEBAR_ROW_BOOKMARK;
     }
+    if (place_type_1 == NAUTILUS_SIDEBAR_ROW_BOOKMARK_SEPARATOR)
+    {
+        place_type_1 = NAUTILUS_SIDEBAR_ROW_BOOKMARK;
+    }
+    if (place_type_2 == NAUTILUS_SIDEBAR_ROW_BOOKMARK_SEPARATOR)
+    {
+        place_type_2 = NAUTILUS_SIDEBAR_ROW_BOOKMARK;
+    }
 
     if (place_type_1 != place_type_2)
     {
@@ -3547,6 +3920,20 @@ nautilus_sidebar_init (NautilusSidebar *sidebar)
                                    G_CONNECT_SWAPPED);
 
     sidebar->open_flags = NAUTILUS_OPEN_FLAG_NORMAL;
+
+    sidebar->separator_uris = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+    load_separators (sidebar);
+    {
+        g_autofree char *path = get_separators_path ();
+        g_autoptr (GFile) separators_file = g_file_new_for_path (path);
+
+        sidebar->separators_monitor = g_file_monitor_file (separators_file, G_FILE_MONITOR_NONE, NULL, NULL);
+        if (sidebar->separators_monitor != NULL)
+        {
+            g_signal_connect (sidebar->separators_monitor, "changed",
+                              G_CALLBACK (on_separators_file_changed), sidebar);
+        }
+    }
 
     NautilusApplication *app = NAUTILUS_APPLICATION (g_application_get_default ());
     sidebar->bookmark_list = nautilus_application_get_bookmarks (app);
@@ -3737,6 +4124,13 @@ nautilus_sidebar_dispose (GObject *object)
     g_clear_object (&sidebar->window_slot);
     g_clear_object (&sidebar->slot_signal_group);
 
+    if (sidebar->separators_monitor != NULL)
+    {
+        g_signal_handlers_disconnect_by_data (sidebar->separators_monitor, sidebar);
+        g_file_monitor_cancel (sidebar->separators_monitor);
+        g_clear_object (&sidebar->separators_monitor);
+    }
+
     g_clear_pointer (&sidebar->popover, gtk_widget_unparent);
 
     if (sidebar->rename_popover)
@@ -3812,6 +4206,7 @@ nautilus_sidebar_finalize (GObject *object)
     NautilusSidebar *sidebar = NAUTILUS_PLACES_SIDEBAR (object);
 
     g_clear_object (&sidebar->row_actions);
+    g_clear_pointer (&sidebar->separator_uris, g_hash_table_unref);
 
     g_clear_pointer (&sidebar->swin, gtk_widget_unparent);
 
