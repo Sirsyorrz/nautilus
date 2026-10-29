@@ -1,6 +1,7 @@
 # Maintainer: Sirsyorrz <Sirsyorrz@gmail.com>
 # Based on the Arch nautilus PKGBUILD. Uses the stock libnautilus-extension.
-# Lives on the sirs/<major> branch of github.com/Sirsyorrz/nautilus and builds that branch.
+# Lives on the sirs/<major> branch of github.com/Sirsyorrz/nautilus and builds that branch
+# from the local checkout this PKGBUILD sits in (committed changes only, no push needed).
 # Build with: cd build-aux/arch; makepkg -si
 
 pkgname=nautilus-sirs
@@ -53,7 +54,7 @@ provides=("nautilus=$pkgver")
 conflicts=(nautilus)
 _branch="sirs/${pkgver%%.*}"
 source=(
-  "$_pkgname::git+https://github.com/Sirsyorrz/nautilus.git#branch=$_branch"
+  "$_pkgname::git+file://${startdir%/build-aux/arch}#branch=$_branch"
   "git+https://gitlab.gnome.org/GNOME/libgxdp.git#commit=df896e3412b749947bc6f62a91a1aac8e6b6d19b"
 )
 b2sums=('SKIP'
